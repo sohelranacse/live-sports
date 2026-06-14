@@ -111,6 +111,13 @@
     }
     .channel-count { font-weight: 600; color: #ddd; }
 
+    .current-source {
+      font-size: .62rem; color: #555; margin: 3px 0 0; padding: 1px 5px;
+      border-radius: 4px; cursor: pointer; white-space: nowrap; overflow: hidden;
+      text-overflow: ellipsis; max-width: 100%;
+    }
+    .current-source:hover { color: #888; background: #1a1a1a; }
+
     .filter-tabs {
       display: flex; gap: 4px; background: #0a0a0a; border-radius: 999px; padding: 3px;
     }
@@ -434,6 +441,8 @@
         <span>+</span>
       </button>
 
+      <button class="icon-btn" id="sourcesBtn" title="Switch M3U source (saved)" aria-label="Switch M3U">📡</button>
+
       <button class="icon-btn" id="refreshBtn" title="Refresh playlist" aria-label="Refresh">
         ⟳
       </button>
@@ -455,6 +464,7 @@
         <div class="sidebar-title">
           <span>CHANNELS <span class="channel-count" id="channelCount">(0)</span></span>
         </div>
+        <div id="currentSource" class="current-source" title="Click to switch playlist source"></div>
         <div class="filter-tabs" id="filterTabs">
           <div class="filter-tab active" data-filter="all">All</div>
           <div class="filter-tab" data-filter="fav">★ Favs</div>
@@ -576,6 +586,18 @@
     </div>
   </div>
 
+  <!-- SOURCES SWITCHER MENU -->
+  <div class="settings-menu" id="sourcesMenu">
+    <div class="section">
+      <div class="section-title">SWITCH M3U PLAYLIST</div>
+      <div id="sourcesList"></div>
+    </div>
+    <div class="section" style="border-top:1px solid #222;margin-top:4px;padding-top:6px;">
+      <div style="font-size:.68rem;color:#666;padding:0 8px 4px;">Or use custom</div>
+      <div class="settings-item" id="openAddFromSources" style="font-size:.82rem;">+ Add / load custom M3U URL</div>
+    </div>
+  </div>
+
   <!-- ADD SOURCE MODAL -->
   <div id="sourceModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,.7); z-index:120; align-items:center; justify-content:center;">
     <div style="background:#0f0f0f; border:1px solid #27272a; width:92%; max-width:420px; border-radius:14px; padding:18px;">
@@ -635,7 +657,6 @@
 
   <script>
     // ==================== CONFIG & STATE ====================
-    const ORIGINAL_M3U = 'https://raw.githubusercontent.com/munim-sah75/Cofs_TV/refs/heads/main/fancode.m3u';
     const AUTO_REFRESH_MS = 6 * 60 * 1000;
 
     let channels = [];
@@ -654,9 +675,22 @@
     const LS_RECENT = 'ls_recents_v2';
     const LS_VOL = 'ls_volume';
     const LS_LAST = 'ls_last_channel';
+    const LS_SOURCE = 'ls_current_source_v2';
 
     let favorites = new Set();
     let recents = []; // array of channel keys
+    let currentSourceUrl = null;
+
+    // Predefined M3U sources (switchable + persisted)
+    // Local relative for files co-located with index.html (fifa, bangla); full raw for others as provided
+    const SOURCES = [
+      { name: 'Bangla TV Channels', url: 'https://raw.githubusercontent.com/sohelranacse/live-sports/refs/heads/main/bangla-channel.m3u' },
+      { name: 'FIFA World Cup 2026', url: 'https://raw.githubusercontent.com/sohelranacse/live-sports/refs/heads/main/fifa-world-cup.m3u' },
+      { name: 'Fancode Sports', url: 'https://raw.githubusercontent.com/munim-sah75/Cofs_TV/refs/heads/main/fancode.m3u' },
+      { name: 'Digital MPD', url: 'https://raw.githubusercontent.com/mdarif2743/Cmcl-digital-mpd/refs/heads/main/README.m3u' },
+      { name: 'Mamun TV', url: 'https://raw.githubusercontent.com/mamunptsc1/tv/refs/heads/main/1.m3u' },
+      { name: 'Sports TV', url: 'https://raw.githubusercontent.com/stablesports711-hue/stable-sports-iptv/refs/heads/main/STABLE-SPORTS%20TV.m3u' }
+    ];
 
     // DOM
     const video = document.getElementById('video');
@@ -715,6 +749,35 @@
 
     function getChannelKey(ch) {
       return (ch.title || 'untitled') + '|' + (ch.url || '').slice(-42);
+    }
+
+    function getSourceNameByUrl(u) {
+      if (!u) return '—';
+      if (u === '__upload__') return 'Uploaded file';
+      if (u === '__demo__') return 'Demo streams';
+      const found = SOURCES.find(s => s.url === u);
+      if (found) return found.name;
+      // custom http url
+      try {
+        const host = new URL(u).hostname.replace(/^www\./, '');
+        return host.length > 22 ? host.slice(0, 19) + '…' : host;
+      } catch (e) { return 'Custom source'; }
+    }
+
+    function updateCurrentSourceUI() {
+      const el = document.getElementById('currentSource');
+      if (!el) return;
+      const name = getSourceNameByUrl(currentSourceUrl);
+      el.textContent = '📡 ' + name;
+      el.title = 'Current: ' + name + '. Click to switch M3U source';
+      el.onclick = () => {
+        const m = document.getElementById('sourcesMenu');
+        if (m && m.classList.contains('show')) {
+          m.classList.remove('show');
+        } else {
+          toggleSources();
+        }
+      };
     }
 
     function showLoading(msg) {
@@ -1412,6 +1475,7 @@
             break;
           case 'escape':
             if (settingsMenu.classList.contains('show')) settingsMenu.classList.remove('show');
+            else if (document.getElementById('sourcesMenu').classList.contains('show')) document.getElementById('sourcesMenu').classList.remove('show');
             else if (helpModal.style.display === 'flex') helpModal.style.display = 'none';
             else if (sourceModal.style.display === 'flex') sourceModal.style.display = 'none';
             else if (appRoot.classList.contains('drawer-open')) closeDrawer();
@@ -1497,7 +1561,8 @@
     }
 
     // ==================== PLAYLIST LOADING & SOURCES ====================
-    async function fetchPlaylist(url = ORIGINAL_M3U, replace = true) {
+    async function fetchPlaylist(url, replace = true) {
+      if (!url) url = currentSourceUrl || SOURCES[0].url;
       const btn = document.getElementById('refreshBtn');
       if (btn) btn.disabled = true;
       showLoading('Fetching channels...');
@@ -1517,6 +1582,9 @@
           parsed.forEach(p => { if (!existingKeys.has(getChannelKey(p))) channels.push(p); });
         }
 
+        currentSourceUrl = url;
+        if (url && url !== '__upload__') saveLS(LS_SOURCE, url);
+
         updateFiltersAfterLoad();
         hideLoading();
 
@@ -1531,6 +1599,7 @@
           loadStream(startIdx);
         }
         renderChannelList();
+        updateCurrentSourceUI();
       } catch (err) {
         hideLoading();
         showError('Failed to load playlist. Use + to add your own.');
@@ -1575,8 +1644,10 @@
         demos.forEach(d => { if (!keys.has(getChannelKey(d))) channels.push(d); });
       }
 
+      currentSourceUrl = '__demo__';
       updateFiltersAfterLoad();
       renderChannelList();
+      updateCurrentSourceUI();
       if (activeIndex < 0 && channels.length) loadStream(0);
       hideLoading();
     }
@@ -1610,8 +1681,10 @@
           const parsed = parseM3U(ev.target.result);
           if (parsed.length) {
             channels = parsed;
+            currentSourceUrl = '__upload__';
             updateFiltersAfterLoad();
             renderChannelList();
+            updateCurrentSourceUI();
             if (activeIndex < 0) loadStream(0);
           }
           sourceModal.style.display = 'none';
@@ -1624,6 +1697,68 @@
         sourceModal.style.display = 'none';
         loadDemoStreams(true);
       };
+
+      // sources switcher
+      const sourcesBtn = document.getElementById('sourcesBtn');
+      if (sourcesBtn) sourcesBtn.onclick = toggleSources;
+
+      const openAddSrc = document.getElementById('openAddFromSources');
+      if (openAddSrc) openAddSrc.onclick = () => {
+        const sm = document.getElementById('sourcesMenu');
+        if (sm) sm.classList.remove('show');
+        sourceModal.style.display = 'flex';
+        document.getElementById('m3uUrlInput').focus();
+      };
+    }
+
+    function populateSourcesList() {
+      const list = document.getElementById('sourcesList');
+      if (!list) return;
+      list.innerHTML = '';
+      const cur = currentSourceUrl;
+      SOURCES.forEach(src => {
+        const item = document.createElement('div');
+        item.className = 'settings-item' + (src.url === cur ? ' active' : '');
+        item.innerHTML = src.name + (src.url === cur ? ' <span class="check">✓</span>' : '');
+        item.onclick = async () => {
+          document.getElementById('sourcesMenu').classList.remove('show');
+          if (src.url !== currentSourceUrl) {
+            await fetchPlaylist(src.url, true);
+          }
+        };
+        list.appendChild(item);
+      });
+    }
+
+    function toggleSources() {
+      const menu = document.getElementById('sourcesMenu');
+      const settingsM = document.getElementById('settingsMenu');
+      if (settingsM && settingsM.classList.contains('show')) settingsM.classList.remove('show');
+
+      if (menu.classList.contains('show')) {
+        menu.classList.remove('show');
+        return;
+      }
+      populateSourcesList();
+      // dynamically align to the sourcesBtn
+      const btn = document.getElementById('sourcesBtn');
+      if (btn) {
+        const rect = btn.getBoundingClientRect();
+        const rightPx = Math.max(8, window.innerWidth - rect.right + 2);
+        menu.style.right = rightPx + 'px';
+        menu.style.left = 'auto';
+      }
+      menu.classList.add('show');
+      // outside click to close (similar to settings)
+      setTimeout(() => {
+        const onDoc = (ev) => {
+          if (!menu.contains(ev.target) && ev.target.id !== 'sourcesBtn') {
+            menu.classList.remove('show');
+            document.removeEventListener('click', onDoc, true);
+          }
+        };
+        document.addEventListener('click', onDoc, true);
+      }, 10);
     }
 
     // ==================== FILTERS & SEARCH ====================
@@ -1702,7 +1837,14 @@
       };
 
       // header buttons
-      document.getElementById('refreshBtn').onclick = () => fetchPlaylist(ORIGINAL_M3U, true);
+      document.getElementById('refreshBtn').onclick = () => {
+        if (currentSourceUrl && currentSourceUrl.startsWith('http')) {
+          fetchPlaylist(currentSourceUrl, true);
+        } else {
+          // fallback to first preset
+          fetchPlaylist(SOURCES[0].url, true);
+        }
+      };
       document.getElementById('theaterBtn').onclick = toggleTheater;
       statsBtn.onclick = toggleStats;
       settingsBtn.onclick = toggleSettings;
@@ -1723,10 +1865,9 @@
     function startAutoRefresh() {
       if (refreshTimer) clearInterval(refreshTimer);
       refreshTimer = setInterval(() => {
-        // only refresh if not actively watching a custom list or if original
-        if (channels.length && document.visibilityState === 'visible') {
-          // soft refresh: re-fetch original in background, keep current playing
-          fetch(ORIGINAL_M3U).then(r => r.text()).then(txt => {
+        if (channels.length && document.visibilityState === 'visible' && currentSourceUrl && currentSourceUrl.startsWith('http')) {
+          // soft refresh current source in background, keep current playing
+          fetch(currentSourceUrl).then(r => r.text()).then(txt => {
             const fresh = parseM3U(txt);
             if (fresh.length) {
               // merge keeping current
@@ -1734,6 +1875,7 @@
               channels = fresh;
               updateFiltersAfterLoad();
               renderChannelList();
+              updateCurrentSourceUI();
               if (currentKey) {
                 const newIdx = channels.findIndex(c => getChannelKey(c) === currentKey);
                 if (newIdx >= 0) activeIndex = newIdx;
@@ -1752,8 +1894,12 @@
     async function init() {
       restoreFavoritesAndRecents();
 
-      // initial load from original
-      await fetchPlaylist(ORIGINAL_M3U, true);
+      // initial load: use last switched source if saved, else first preset
+      const savedSrc = loadLS(LS_SOURCE, null);
+      const startUrl = savedSrc || SOURCES[0].url;
+      currentSourceUrl = startUrl;
+      updateCurrentSourceUI();
+      await fetchPlaylist(startUrl, true);
 
       // restore last played if possible
       restoreLastChannel();
@@ -1787,6 +1933,8 @@
       window.LIVE_SPORTS_PLAYER = {
         loadM3U: (u) => fetchPlaylist(u, true),
         loadDemos: () => loadDemoStreams(true),
+        switchSource: (u) => fetchPlaylist(u, true),
+        listSources: () => SOURCES,
         getChannels: () => channels,
         playIndex: (i) => loadStream(i)
       };
